@@ -1,0 +1,6 @@
+{
+  "name":"@adaptive/api","version":"0.1.0","private":true,"type":"module",
+  "scripts":{"dev":"tsx watch src/server.ts","build":"tsc -b","lint":"eslint . --max-warnings=0","typecheck":"tsc -b --pretty false","test":"node --test"},
+  "dependencies":{"@adaptive/ai":"workspace:*","@adaptive/config":"workspace:*","@adaptive/shared":"workspace:*"},
+  "devDependencies":{"tsx":"^4.19.2"}
+}

@@ -1,0 +1,5 @@
+{
+  "name":"@adaptive/web","version":"0.1.0","private":true,"type":"module",
+  "scripts":{"dev":"tsx src/server.ts","build":"tsc -b","lint":"eslint . --max-warnings=0","typecheck":"tsc -b --pretty false","test":"node --test"},
+  "devDependencies":{"tsx":"^4.19.2"}
+}
