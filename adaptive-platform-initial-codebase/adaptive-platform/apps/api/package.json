@@ -1,6 +1,24 @@
 {
-  "name":"@adaptive/api","version":"0.1.0","private":true,"type":"module",
-  "scripts":{"dev":"tsx watch src/server.ts","build":"tsc -b","lint":"eslint . --max-warnings=0","typecheck":"tsc -b --pretty false","test":"node --test"},
-  "dependencies":{"@adaptive/ai":"workspace:*","@adaptive/config":"workspace:*","@adaptive/shared":"workspace:*"},
-  "devDependencies":{"tsx":"^4.19.2"}
+  "name": "@adaptive/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "db:migrate": "tsx src/db/cli.ts",
+    "build": "tsc -b",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc -b --pretty false",
+    "test": "tsx --test"
+  },
+  "dependencies": {
+    "@adaptive/ai": "workspace:*",
+    "@adaptive/config": "workspace:*",
+    "@adaptive/shared": "workspace:*",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2"
+  }
 }
