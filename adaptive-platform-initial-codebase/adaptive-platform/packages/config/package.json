@@ -1,4 +1,14 @@
 {
-  "name":"@adaptive/config","version":"0.1.0","private":true,"type":"module",
-  "scripts":{"build":"tsc -b","lint":"eslint . --max-warnings=0","typecheck":"tsc -b --pretty false","test":"node --test"}
+  "name": "@adaptive/config",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc -b --pretty false",
+    "test": "node --test"
+  }
 }
