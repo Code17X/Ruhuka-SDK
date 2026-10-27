@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Pool as PoolType } from "pg";
-import { getLinkedStudentId, requirePermission } from "./authorization.js";
+import {
+  getAssignedClassIds,
+  getLinkedStudentId,
+  requirePermission,
+} from "./authorization.js";
 
 function fakePool(responses: unknown[][]) {
   let index = 0;
@@ -54,5 +58,16 @@ describe("authorization core", () => {
 
   test("returns null for a client membership with no linked student", async () => {
     assert.equal(await getLinkedStudentId(fakePool([[]]), "m1"), null);
+  });
+
+  test("returns assigned class IDs and empty array when unassigned", async () => {
+    assert.deepEqual(
+      await getAssignedClassIds(
+        fakePool([[{ class_id: "c1" }, { class_id: "c2" }]]),
+        "m1",
+      ),
+      ["c1", "c2"],
+    );
+    assert.deepEqual(await getAssignedClassIds(fakePool([[]]), "m1"), []);
   });
 });
