@@ -1,6 +1,11 @@
 packages:
-  - "apps/*"
-  - "packages/*"
+  - apps/*
+  - packages/*
+
 allowBuilds:
   argon2: true
   esbuild: true
+
+ignoredBuiltDependencies:
+  - argon2
+  - esbuild
