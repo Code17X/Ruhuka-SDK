@@ -105,10 +105,10 @@ trusted assignment workflow / authorization layer unless a reviewed database
 mechanism is introduced. No client-supplied identifier can create or change
 this relationship.
 
-**Open question:** Should deleting a student be restricted while linked
-(`ON DELETE RESTRICT`) or should trusted student deletion remove links
-(`ON DELETE CASCADE`)? Which privileged workflow may create, change, or remove
-a link, and is student sharing across different client memberships allowed?
+**Answered:** Student records may be shared across different client
+memberships. Deleting a student is restricted (`ON DELETE RESTRICT`) while a
+client-student link exists. The privileged workflow for managing links remains
+an open question.
 
 ### 3. Staff-to-class assignment — `staff_class_assignments`
 
@@ -171,8 +171,9 @@ a separate catalog and policy approval.
 
 Use three normalized catalogs. Keep policy rows centrally managed, with no
 organization key unless a future explicit decision introduces tenant-specific
-overrides. The initial catalog and matrix in `permission-catalog.md` are
-proposals; this design does not seed grants.
+overrides. Migration 004 seeds the approved catalog and matrix in
+`permission-catalog.md`; `ai_tool.execute` is per-tool policy outside this
+table, and conditional `audit_log` receives no rows.
 
 #### `permissions`
 
@@ -309,8 +310,7 @@ order. Each should have an explicit rollback note in its review. Existing
 migration files remain immutable under the current migration runner; any
 correction should be a new forward migration.
 
-**Open question:** Confirm whether class and department foundations belong in
-this batch's eventual migration sequence or will be delivered separately, and
-whether policy catalog seeds are versioned in migrations or deployed through a
-separate controlled policy release. Also confirm rollback/backup expectations
-for populated relationship and policy tables.
+**Answered:** Policy catalog seeds are versioned in migration 004. Classes
+belong to this work stream and will be designed/implemented in Slice 3, before
+staff class assignments. Department foundations remain separate. Rollback and
+backup expectations for populated relationship and policy tables remain open.
