@@ -230,3 +230,96 @@ describe("authentication API request handling", () => {
     }
   });
 });
+
+
+describe("protected user profile route", () => {
+  const token = "A".repeat(43);
+  function profilePool(options: {
+    membershipStatus?: string;
+    scopes?: { scope: string }[];
+    session?: { user_id: string } | null;
+  }) {
+    const calls: { sql: string; values?: unknown[] }[] = [];
+    const { pool } = fakePool((sql, values) => {
+      calls.push({ sql, values });
+      if (/FROM user_sessions/.test(sql)) {
+        return { rows: options.session === null ? [] : [{ user_id: "u1" }] };
+      }
+      if (/FROM memberships/.test(sql)) {
+        return { rows: [{ id: "m1", status: options.membershipStatus ?? "active" }] };
+      }
+      if (/FROM membership_roles/.test(sql)) {
+        return { rows: options.scopes ?? [{ scope: "own_user" }] };
+      }
+      if (/SELECT id, email FROM users/.test(sql)) {
+        return { rows: [{ id: "u1", email: "me@example.invalid" }] };
+      }
+      return { rows: [] };
+    });
+    return { pool, calls };
+  }
+  async function fetchMe(pool: Pool, orgHeader?: string) {
+    const app = await startServer(pool);
+    try {
+      const headers: Record<string, string> = { Cookie: `ruhuka_session=${token}` };
+      if (orgHeader !== undefined) {
+        headers["X-Organization-Id"] = orgHeader;
+      }
+      return await fetch(`${app.baseUrl}/v1/users/me`, { headers });
+    } finally {
+      await app.close();
+    }
+  }
+  test("requires an authenticated session", async () => {
+    const response = await fetchMe(fakePool().pool);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: "unauthenticated" });
+  });
+  test("requires the organization selector header", async () => {
+    const { pool } = profilePool({});
+    const response = await fetchMe(pool);
+    assert.equal(response.status, 400);
+  });
+  test("returns the caller's own profile when authorized", async () => {
+    const { pool, calls } = profilePool({});
+    const response = await fetchMe(pool, "org-1");
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { userId: "u1", email: "me@example.invalid" });
+    const membershipCall = calls.find((call) => /FROM memberships/.test(call.sql));
+    assert.deepEqual(membershipCall?.values, ["u1", "org-1"]);
+  });
+  test("denies a suspended membership without leaking the reason", async () => {
+    const { pool } = profilePool({ membershipStatus: "suspended" });
+    const logs: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    try {
+      const response = await fetchMe(pool, "org-1");
+      assert.equal(response.status, 403);
+      const body = JSON.stringify(await response.json());
+      assert.equal(body.includes("suspended"), false);
+      assert.ok(logs.some((line) => line.includes("authorization_denied")));
+    } finally {
+      console.error = originalError;
+    }
+  });
+  test("denies when the permission is not granted", async () => {
+    const { pool } = profilePool({ scopes: [] });
+    const response = await fetchMe(pool, "org-1");
+    assert.equal(response.status, 403);
+    assert.deepEqual(await response.json(), { error: "forbidden" });
+  });
+  test("denies when own_user scope is missing despite a grant", async () => {
+    const { pool } = profilePool({ scopes: [{ scope: "organization" }] });
+    const logs: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    try {
+      const response = await fetchMe(pool, "org-1");
+      assert.equal(response.status, 403);
+      assert.ok(logs.some((line) => line.includes("scope_not_granted")));
+    } finally {
+      console.error = originalError;
+    }
+  });
+});

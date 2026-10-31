@@ -14,6 +14,7 @@ import {
   revokeSession,
   SESSION_TTL_MS,
 } from "./auth.js";
+import { requirePermission } from "./authorization.js";
 import { createDatabasePool } from "./db/pool.js";
 import { isValidLoginInput } from "./login-validation.js";
 import { LoginRateLimiter } from "./login-rate-limit.js";
@@ -126,6 +127,7 @@ function safeRouteName(req: IncomingMessage): string {
     pathname === "/v1/auth/login" ||
     pathname === "/v1/auth/logout" ||
     pathname === "/v1/auth/session" ||
+    pathname === "/v1/users/me" ||
     pathname === "/v1/ai/sessions/demo/messages"
   ) {
     return pathname;
@@ -222,6 +224,50 @@ async function handleRequest(
       return;
     }
     json(res, 200, { userId: user.userId });
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/v1/users/me") {
+    const user = await authenticateSession(
+      pool,
+      cookieValue(req, "ruhuka_session"),
+    );
+    if (!user) {
+      json(res, 401, { error: "unauthenticated" });
+      return;
+    }
+    const organizationId = req.headers["x-organization-id"];
+    if (typeof organizationId !== "string" || organizationId.length === 0) {
+      json(res, 400, { error: "invalid_request" });
+      return;
+    }
+    const decision = await requirePermission(pool, {
+      userId: user.userId,
+      organizationId,
+      permission: "user.read",
+    });
+    if (!decision.granted || !decision.scopes.includes("own_user")) {
+      console.error(
+        "API authorization denied",
+        JSON.stringify({
+          event: "authorization_denied",
+          route: "/v1/users/me",
+          reason: decision.granted ? "scope_not_granted" : decision.reason,
+        }),
+      );
+      json(res, 403, { error: "forbidden" });
+      return;
+    }
+    const profile = await pool.query<{ id: string; email: string }>(
+      "SELECT id, email FROM users WHERE id = $1",
+      [user.userId],
+    );
+    const row = profile.rows[0];
+    if (!row) {
+      json(res, 404, { error: "not_found" });
+      return;
+    }
+    json(res, 200, { userId: row.id, email: row.email });
     return;
   }
 
