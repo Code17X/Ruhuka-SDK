@@ -1,5 +1,19 @@
 export type UserRole = "visitor" | "client" | "staff" | "admin";
-export type PermissionScope = "self" | "assigned" | "group" | "department" | "organization";
+
+/**
+ * Canonical scope vocabulary for authorization grants.
+ * - own_user: The user's own global profile.
+ * - linked_student: Exactly the one student linked to this client membership in the current org.
+ * - assigned_class: Classes explicitly assigned to this staff membership in the current org.
+ * - department: Departments explicitly assigned to this staff membership in the current org.
+ * - organization: Organization-wide access (requires explicit grant, no implicit widening).
+ */
+export type PermissionScope = 
+  | "own_user"
+  | "linked_student"
+  | "assigned_class"
+  | "department"
+  | "organization";
 
 export interface AuthenticatedUser {
   userId: string;
