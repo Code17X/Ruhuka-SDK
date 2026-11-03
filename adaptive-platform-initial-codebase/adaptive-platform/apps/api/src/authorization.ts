@@ -64,3 +64,34 @@ export async function getAssignedClassIds(
     return [];
   }
 }
+
+/**
+ * AI tool policy registry.
+ * Maps tool names to their required underlying permission.
+ * Tools never grant access implicitly; each must be backed by an explicit permission check.
+ */
+const TOOL_POLICY: Record<string, string> = {
+  "student.read": "student.read",
+  "student.update": "student.update",
+  "class.read": "class.read",
+  "class.update": "class.update",
+};
+
+/**
+ * Check if a user is authorized to execute a specific AI tool.
+ * Returns the permission decision for the tool's underlying permission.
+ */
+export async function checkToolPermission(
+  pool: Pick<Pool, "query">,
+  input: { userId: string; organizationId: string; toolName: string },
+): Promise<PermissionDecision> {
+  const requiredPermission = TOOL_POLICY[input.toolName];
+  if (!requiredPermission) {
+    return { granted: false, reason: "tool_not_in_policy" };
+  }
+  return requirePermission(pool, {
+    userId: input.userId,
+    organizationId: input.organizationId,
+    permission: requiredPermission,
+  });
+}

@@ -68,3 +68,15 @@ export interface AiToolResult {
   output: unknown;
   authorized: boolean;
 }
+/**
+ * Policy definition for AI tool execution.
+ * Tools are not implicitly trusted; each must map to an explicit permission check.
+ */
+export interface AiToolPolicy {
+  /** The unique identifier of the tool (e.g., "student.read") */
+  toolName: string;
+  /** The permission key required from the policy catalog (e.g., "student.read") */
+  requiredPermission: string;
+  /** The scope the user must hold to execute the tool */
+  requiredScope: PermissionScope;
+}

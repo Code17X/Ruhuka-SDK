@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Pool as PoolType } from "pg";
 import {
+  checkToolPermission,
   getAssignedClassIds,
   getLinkedStudentId,
   requirePermission,
@@ -69,5 +70,28 @@ describe("authorization core", () => {
       ["c1", "c2"],
     );
     assert.deepEqual(await getAssignedClassIds(fakePool([[]]), "m1"), []);
+  });
+});
+
+describe("AI tool authorization", () => {
+  test("allows a tool when the underlying permission is granted", async () => {
+    const pool = fakePool([[{ id: "m1", status: "active" }], [{ scope: "organization" }]]);
+    assert.deepEqual(await checkToolPermission(pool, {
+      userId: "u1", organizationId: "o1", toolName: "student.read",
+    }), { granted: true, scopes: ["organization"] });
+  });
+
+  test("denies a tool when the underlying permission is not granted", async () => {
+    const pool = fakePool([[{ id: "m1", status: "active" }], []]);
+    assert.deepEqual(await checkToolPermission(pool, {
+      userId: "u1", organizationId: "o1", toolName: "student.read",
+    }), { granted: false, reason: "permission_not_granted" });
+  });
+
+  test("denies a tool not in the policy registry", async () => {
+    const pool = fakePool([[{ id: "m1", status: "active" }]]);
+    assert.deepEqual(await checkToolPermission(pool, {
+      userId: "u1", organizationId: "o1", toolName: "unknown.tool",
+    }), { granted: false, reason: "tool_not_in_policy" });
   });
 });
