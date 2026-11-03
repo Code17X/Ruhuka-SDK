@@ -1,4 +1,4 @@
-import {
+﻿import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
@@ -14,7 +14,7 @@ import {
   revokeSession,
   SESSION_TTL_MS,
 } from "./auth.js";
-import { requirePermission } from "./authorization.js";
+import { auditAuthorizationDecision, requirePermission } from "./authorization.js";
 import { createDatabasePool } from "./db/pool.js";
 import { isValidLoginInput } from "./login-validation.js";
 import { LoginRateLimiter } from "./login-rate-limit.js";
@@ -22,6 +22,7 @@ import { isJsonContentType } from "./request-content-type.js";
 
 const ai = new AiOrchestrator(new MockAiProvider());
 const MAX_BODY_BYTES = 16 * 1024;
+
 class RequestInputError extends Error {
   constructor(
     readonly statusCode: 400 | 413,
@@ -40,9 +41,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function readJson(
-  req: IncomingMessage,
-): Promise<Record<string, unknown>> {
+async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let bodyBytes = 0;
   for await (const chunk of req) {
@@ -241,11 +240,24 @@ async function handleRequest(
       json(res, 400, { error: "invalid_request" });
       return;
     }
+    
     const decision = await requirePermission(pool, {
       userId: user.userId,
       organizationId,
       permission: "user.read",
     });
+
+    await auditAuthorizationDecision(pool, {
+      userId: user.userId,
+      organizationId,
+      permission: "user.read",
+      resource: "user_profile",
+      scope: decision.granted ? decision.scopes.join(",") : undefined,
+      decision: decision.granted ? "granted" : "denied",
+      reason: decision.granted ? undefined : decision.reason,
+      route: "/v1/users/me",
+    });
+
     if (!decision.granted || !decision.scopes.includes("own_user")) {
       console.error(
         "API authorization denied",
@@ -258,6 +270,7 @@ async function handleRequest(
       json(res, 403, { error: "forbidden" });
       return;
     }
+    
     const profile = await pool.query<{ id: string; email: string }>(
       "SELECT id, email FROM users WHERE id = $1",
       [user.userId],

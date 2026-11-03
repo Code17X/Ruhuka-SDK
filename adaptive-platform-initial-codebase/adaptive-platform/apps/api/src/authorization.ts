@@ -95,3 +95,39 @@ export async function checkToolPermission(
     permission: requiredPermission,
   });
 }
+/**
+ * Write an authorization decision to the audit log.
+ * Fail-closed: if the write fails, the error is swallowed (the decision itself is already made).
+ */
+export async function auditAuthorizationDecision(
+  pool: Pick<Pool, "query">,
+  input: {
+    userId: string;
+    organizationId: string;
+    permission: string;
+    resource?: string;
+    scope?: string;
+    decision: "granted" | "denied";
+    reason?: string;
+    route?: string;
+  },
+): Promise<void> {
+  try {
+    await pool.query(
+      `INSERT INTO audit_log (user_id, organization_id, permission, resource, scope, decision, reason, route)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        input.userId,
+        input.organizationId,
+        input.permission,
+        input.resource ?? null,
+        input.scope ?? null,
+        input.decision,
+        input.reason ?? null,
+        input.route ?? null,
+      ],
+    );
+  } catch {
+    // Fail closed: audit logging is a side effect; don't expose errors
+  }
+}

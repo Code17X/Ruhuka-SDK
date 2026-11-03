@@ -1,7 +1,8 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Pool as PoolType } from "pg";
 import {
+  auditAuthorizationDecision,
   checkToolPermission,
   getAssignedClassIds,
   getLinkedStudentId,
@@ -93,5 +94,65 @@ describe("AI tool authorization", () => {
     assert.deepEqual(await checkToolPermission(pool, {
       userId: "u1", organizationId: "o1", toolName: "unknown.tool",
     }), { granted: false, reason: "tool_not_in_policy" });
+  });
+});
+
+describe("audit authorization decisions", () => {
+  test("writes a grant decision to the audit log", async () => {
+    const queries: string[] = [];
+    const pool = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        return { rows: [] };
+      },
+    } as unknown as PoolType;
+    await auditAuthorizationDecision(pool, {
+      userId: "u1",
+      organizationId: "o1",
+      permission: "user.read",
+      resource: "user_profile",
+      scope: "own_user",
+      decision: "granted",
+      route: "/v1/users/me",
+    });
+    assert.equal(queries.length, 1);
+    assert.match(queries[0], /INSERT INTO audit_log/);
+  });
+
+  test("writes a denial decision with reason", async () => {
+    const queries: string[] = [];
+    const pool = {
+      query: async (sql: string) => {
+        queries.push(sql);
+        return { rows: [] };
+      },
+    } as unknown as PoolType;
+    await auditAuthorizationDecision(pool, {
+      userId: "u1",
+      organizationId: "o1",
+      permission: "user.read",
+      decision: "denied",
+      reason: "membership_inactive",
+      route: "/v1/users/me",
+    });
+    assert.equal(queries.length, 1);
+    assert.match(queries[0], /INSERT INTO audit_log/);
+  });
+
+  test("does not throw on database errors", async () => {
+    const pool = {
+      query: async () => {
+        throw new Error("database connection failed");
+      },
+    } as unknown as PoolType;
+    await assert.doesNotReject(async () => {
+      await auditAuthorizationDecision(pool, {
+        userId: "u1",
+        organizationId: "o1",
+        permission: "user.read",
+        decision: "denied",
+        reason: "membership_not_found",
+      });
+    });
   });
 });
