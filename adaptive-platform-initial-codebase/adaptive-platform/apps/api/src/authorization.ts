@@ -1,8 +1,7 @@
 import type { Pool } from "pg";
 
 export type PermissionDecision =
-  | { granted: true; scopes: string[] }
-  | { granted: false; reason: string };
+  { granted: true; scopes: string[] } | { granted: false; reason: string };
 
 export async function requirePermission(
   pool: Pick<Pool, "query">,
@@ -14,78 +13,179 @@ export async function requirePermission(
        WHERE user_id = $1 AND organization_id = $2`,
       [input.userId, input.organizationId],
     );
-    const row = membership.rows[0] as { id: string; status: string } | undefined;
+    const row = membership.rows[0] as
+      { id: string; status: string } | undefined;
     if (!row) return { granted: false, reason: "membership_not_found" };
-    if (row.status !== "active") return { granted: false, reason: "membership_inactive" };
+    if (row.status !== "active")
+      return { granted: false, reason: "membership_inactive" };
 
     const result = await pool.query(
       `SELECT DISTINCT rp.scope
-       FROM membership_roles mr
-       JOIN roles r ON r.key = mr.role
-       JOIN role_permissions rp ON rp.role_id = r.id
-       JOIN permissions p ON p.id = rp.permission_id
-       WHERE mr.membership_id = $1 AND mr.organization_id = $2 AND p.key = $3
+       FROM organization_role_permissions rp
+       JOIN organization_permissions p
+         ON p.id = rp.permission_id AND p.organization_id = rp.organization_id
+       JOIN organization_roles r ON r.id = rp.role_id AND r.organization_id = rp.organization_id
+       WHERE rp.organization_id = $2 AND p.permission_key = $3
+         AND (
+           EXISTS (SELECT 1 FROM membership_roles mr
+                   WHERE mr.membership_id = $1 AND mr.organization_id = $2 AND mr.role = r.role_key)
+           OR EXISTS (SELECT 1 FROM organization_membership_roles mr
+                      WHERE mr.membership_id = $1 AND mr.organization_id = $2 AND mr.role_id = r.id)
+         )
        ORDER BY rp.scope`,
       [row.id, input.organizationId, input.permission],
     );
-    const scopes = result.rows.map((grant) => (grant as { scope: string }).scope);
-    return scopes.length ? { granted: true, scopes } : { granted: false, reason: "permission_not_granted" };
+    const scopes = result.rows.map(
+      (grant) => (grant as { scope: string }).scope,
+    );
+    return scopes.length
+      ? { granted: true, scopes }
+      : { granted: false, reason: "permission_not_granted" };
   } catch {
     return { granted: false, reason: "authorization_unavailable" };
   }
 }
 
-export async function getLinkedStudentId(
+export async function hasOrganizationRole(
   pool: Pick<Pool, "query">,
-  membershipId: string,
-): Promise<string | null> {
-  try {
-    const result = await pool.query(
-      "SELECT student_id FROM client_student_links WHERE membership_id = $1",
-      [membershipId],
-    );
-    return (result.rows[0] as { student_id: string } | undefined)?.student_id ?? null;
-  } catch {
-    return null;
-  }
+  input: { userId: string; organizationId: string; roleKey: string },
+): Promise<boolean> {
+  // Errors propagate: a failed admin lookup is an infrastructure error, not a grant.
+  const result = await pool.query(
+    `SELECT 1 FROM memberships m
+     JOIN organization_roles r ON r.organization_id = m.organization_id AND r.role_key = $3
+     WHERE m.user_id = $1 AND m.organization_id = $2 AND m.status = 'active'
+       AND (EXISTS (SELECT 1 FROM membership_roles mr WHERE mr.organization_id = m.organization_id
+                    AND mr.membership_id = m.id AND mr.role = r.role_key)
+         OR EXISTS (SELECT 1 FROM organization_membership_roles mr WHERE mr.organization_id = m.organization_id
+                    AND mr.membership_id = m.id AND mr.role_id = r.id))`,
+    [input.userId, input.organizationId, input.roleKey],
+  );
+  return result.rows.length > 0;
 }
 
-export async function getAssignedClassIds(
+export function scopePath(scope: string): string[] | null {
+  if (scope === "assigned_entity") return ["out.assigned_to"];
+  if (scope === "linked_entity") return ["out.linked_to"];
+  if (
+    !/^path:(out|in)\.[a-z][a-z0-9_]{0,63}(\/(out|in)\.[a-z][a-z0-9_]{0,63}){0,3}$/.test(
+      scope,
+    )
+  )
+    return null;
+  return scope.slice(5).split("/");
+}
+
+export function isSupportedScope(scope: string): boolean {
+  return (
+    scope === "organization" ||
+    scope === "own_user" ||
+    scopePath(scope) !== null
+  );
+}
+
+/** All traversal starts at the trusted membership anchor and stays in its tenant. */
+async function entitiesAlongPath(
   pool: Pick<Pool, "query">,
   membershipId: string,
+  path: string[],
+  organizationId?: string,
 ): Promise<string[]> {
   try {
     const result = await pool.query(
-      "SELECT class_id FROM staff_class_assignments WHERE membership_id = $1 ORDER BY class_id",
-      [membershipId],
+      `WITH RECURSIVE walk(organization_id, entity_id, depth) AS (
+         SELECT m.organization_id, me.entity_id, 0 FROM memberships m
+         JOIN membership_entities me ON me.organization_id = m.organization_id AND me.membership_id = m.id
+         WHERE m.id = $1 AND m.status = 'active' AND ($3::uuid IS NULL OR m.organization_id = $3)
+         UNION
+         SELECT w.organization_id,
+           CASE WHEN split_part(($2::text[])[w.depth + 1], '.', 1) = 'out'
+                THEN r.to_entity_id ELSE r.from_entity_id END, w.depth + 1
+         FROM walk w JOIN relationships r ON r.organization_id = w.organization_id
+           AND r.relationship_type = split_part(($2::text[])[w.depth + 1], '.', 2)
+           AND r.active
+           AND ((split_part(($2::text[])[w.depth + 1], '.', 1) = 'out' AND r.from_entity_id = w.entity_id)
+             OR (split_part(($2::text[])[w.depth + 1], '.', 1) = 'in' AND r.to_entity_id = w.entity_id))
+         WHERE w.depth < cardinality($2::text[])
+       ) SELECT DISTINCT entity_id FROM walk WHERE depth = cardinality($2::text[]) ORDER BY entity_id`,
+      [membershipId, path, organizationId ?? null],
     );
-    return result.rows.map((row) => (row as { class_id: string }).class_id);
+    return result.rows.map((row) => (row as { entity_id: string }).entity_id);
   } catch {
     return [];
   }
 }
 
-/**
- * AI tool policy registry.
- * Maps tool names to their required underlying permission.
- * Tools never grant access implicitly; each must be backed by an explicit permission check.
- */
-const TOOL_POLICY: Record<string, string> = {
-  "student.read": "student.read",
-  "student.update": "student.update",
-  "class.read": "class.read",
-  "class.update": "class.update",
-};
+export async function getLinkedEntityIds(
+  pool: Pick<Pool, "query">,
+  membershipId: string,
+  relationshipType: string,
+  organizationId?: string,
+): Promise<string[]> {
+  if (!/^[a-z][a-z0-9_]{0,63}$/.test(relationshipType)) return [];
+  return entitiesAlongPath(
+    pool,
+    membershipId,
+    [`out.${relationshipType}`],
+    organizationId,
+  );
+}
 
-/**
- * Check if a user is authorized to execute a specific AI tool.
- * Returns the permission decision for the tool's underlying permission.
- */
+export const getAssignedEntityIds = getLinkedEntityIds;
+
+/** Permission grants alone never authorize an arbitrary entity ID. */
+export async function canAccessEntity(
+  pool: Pick<Pool, "query">,
+  input: {
+    userId: string;
+    organizationId: string;
+    permission: string;
+    entityType: string;
+    entityId: string;
+  },
+): Promise<boolean> {
+  const decision = await requirePermission(pool, input);
+  if (!decision.granted) return false;
+  try {
+    const result = await pool.query(
+      `SELECT m.id AS membership_id FROM memberships m
+       JOIN entities e ON e.organization_id = m.organization_id AND e.id = $3 AND e.entity_type = $4
+       WHERE m.user_id = $1 AND m.organization_id = $2 AND m.status = 'active'`,
+      [input.userId, input.organizationId, input.entityId, input.entityType],
+    );
+    const row = result.rows[0] as { membership_id: string } | undefined;
+    if (!row) return false;
+    if (decision.scopes.includes("organization")) return true;
+    for (const scope of decision.scopes) {
+      const path = scope === "own_user" ? [] : scopePath(scope);
+      if (
+        path &&
+        (
+          await entitiesAlongPath(
+            pool,
+            row.membership_id,
+            path,
+            input.organizationId,
+          )
+        ).includes(input.entityId)
+      )
+        return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/** The future executor supplies a trusted tool registry; request data cannot define it. */
 export async function checkToolPermission(
   pool: Pick<Pool, "query">,
   input: { userId: string; organizationId: string; toolName: string },
+  toolPolicy: Readonly<Record<string, string>> = {},
 ): Promise<PermissionDecision> {
-  const requiredPermission = TOOL_POLICY[input.toolName];
+  const requiredPermission = Object.hasOwn(toolPolicy, input.toolName)
+    ? toolPolicy[input.toolName]
+    : undefined;
   if (!requiredPermission) {
     return { granted: false, reason: "tool_not_in_policy" };
   }

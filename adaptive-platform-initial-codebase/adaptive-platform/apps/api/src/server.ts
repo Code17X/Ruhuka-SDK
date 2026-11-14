@@ -14,11 +14,20 @@ import {
   revokeSession,
   SESSION_TTL_MS,
 } from "./auth.js";
-import { auditAuthorizationDecision, requirePermission } from "./authorization.js";
+import {
+  auditAuthorizationDecision,
+  requirePermission,
+} from "./authorization.js";
 import { createDatabasePool } from "./db/pool.js";
 import { isValidLoginInput } from "./login-validation.js";
 import { LoginRateLimiter } from "./login-rate-limit.js";
 import { isJsonContentType } from "./request-content-type.js";
+import {
+  configurationRoutes,
+  configureOrganization,
+  isPermissionKey,
+  isUuid,
+} from "./organization-config.js";
 
 const ai = new AiOrchestrator(new MockAiProvider());
 const MAX_BODY_BYTES = 16 * 1024;
@@ -41,7 +50,9 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(
+  req: IncomingMessage,
+): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let bodyBytes = 0;
   for await (const chunk of req) {
@@ -79,7 +90,8 @@ function cookieValue(req: IncomingMessage, name: string): string | undefined {
 function sessionCookieAttributes(config: AppConfig): string {
   // Host-only cookies (no Domain) work through the public reverse proxy.
   // Do not derive security settings from untrusted forwarded request headers.
-  const secure = config.nodeEnv === "production" ||
+  const secure =
+    config.nodeEnv === "production" ||
     new URL(config.corsOrigin).protocol === "https:";
   return `Path=/; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
 }
@@ -134,7 +146,9 @@ function safeRouteName(req: IncomingMessage): string {
     pathname === "/v1/auth/logout" ||
     pathname === "/v1/auth/session" ||
     pathname === "/v1/users/me" ||
-    pathname === "/v1/ai/sessions/demo/messages"
+    pathname === "/v1/ai/sessions/demo/messages" ||
+    pathname === "/v1/org/permissions/check" ||
+    (pathname !== undefined && configurationRoutes.has(pathname))
   ) {
     return pathname;
   }
@@ -156,7 +170,7 @@ function logInternalError(req: IncomingMessage, error: unknown): void {
       route: safeRouteName(req),
       errorClass,
       ...(typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)
-        ? { databaseCode: code }
+        ? { databaseCode: code, errorMessage: error.message }
         : {}),
     }),
   );
@@ -177,22 +191,40 @@ async function handleRequest(
       json(res, 403, { error: "forbidden" });
       return;
     }
-    res.setHeader("Access-Control-Allow-Origin", new URL(config.corsOrigin).origin);
+    res.setHeader(
+      "Access-Control-Allow-Origin",
+      new URL(config.corsOrigin).origin,
+    );
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
   if (req.method === "OPTIONS") {
     const method = req.headers["access-control-request-method"];
     const headers = req.headers["access-control-request-headers"];
     const allowedHeaders = new Set(["content-type", "x-organization-id"]);
-    if (!isTrustedOrigin(req.headers.origin, config.corsOrigin) ||
-        typeof method !== "string" || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) ||
-        (typeof headers === "string" && headers.split(",").some((header) => !allowedHeaders.has(header.trim().toLowerCase())))) {
+    if (
+      !isTrustedOrigin(req.headers.origin, config.corsOrigin) ||
+      typeof method !== "string" ||
+      !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) ||
+      (typeof headers === "string" &&
+        headers
+          .split(",")
+          .some((header) => !allowedHeaders.has(header.trim().toLowerCase())))
+    ) {
       json(res, 403, { error: "forbidden" });
       return;
     }
-    res.setHeader("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Organization-Id");
+    res.setHeader(
+      "Vary",
+      "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+    );
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET, POST, PUT, PATCH, DELETE",
+    );
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, X-Organization-Id",
+    );
     res.writeHead(204);
     res.end();
     return;
@@ -204,7 +236,9 @@ async function handleRequest(
 
   if (
     req.method === "POST" &&
-    (req.url === "/v1/auth/login" || req.url === "/v1/auth/logout")
+    (req.url === "/v1/auth/login" ||
+      req.url === "/v1/auth/logout" ||
+      configurationRoutes.has(req.url ?? ""))
   ) {
     if (!isTrustedOrigin(req.headers.origin, config.corsOrigin)) {
       json(res, 403, { error: "forbidden" });
@@ -275,23 +309,27 @@ async function handleRequest(
       json(res, 400, { error: "invalid_request" });
       return;
     }
-    
+
     const decision = await requirePermission(pool, {
       userId: user.userId,
       organizationId,
       permission: "user.read",
     });
 
-    await auditAuthorizationDecision(pool, {
-      userId: user.userId,
-      organizationId,
-      permission: "user.read",
-      resource: "user_profile",
-      scope: decision.granted ? decision.scopes.join(",") : undefined,
-      decision: decision.granted ? "granted" : "denied",
-      reason: decision.granted ? undefined : decision.reason,
-      route: "/v1/users/me",
-    }, false);
+    await auditAuthorizationDecision(
+      pool,
+      {
+        userId: user.userId,
+        organizationId,
+        permission: "user.read",
+        resource: "user_profile",
+        scope: decision.granted ? decision.scopes.join(",") : undefined,
+        decision: decision.granted ? "granted" : "denied",
+        reason: decision.granted ? undefined : decision.reason,
+        route: "/v1/users/me",
+      },
+      false,
+    );
 
     if (!decision.granted || !decision.scopes.includes("own_user")) {
       console.error(
@@ -305,7 +343,7 @@ async function handleRequest(
       json(res, 403, { error: "forbidden" });
       return;
     }
-    
+
     const profile = await pool.query<{ id: string; email: string }>(
       "SELECT id, email FROM users WHERE id = $1",
       [user.userId],
@@ -316,6 +354,64 @@ async function handleRequest(
       return;
     }
     json(res, 200, { userId: row.id, email: row.email });
+    return;
+  }
+
+  if (
+    (req.method === "POST" && configurationRoutes.has(req.url ?? "")) ||
+    (req.method === "GET" &&
+      req.url?.split("?", 1)[0] === "/v1/org/permissions/check")
+  ) {
+    const user = await authenticateSession(
+      pool,
+      cookieValue(req, "ruhuka_session"),
+    );
+    if (!user) {
+      json(res, 401, { error: "unauthenticated" });
+      return;
+    }
+    const organizationId = req.headers["x-organization-id"];
+    if (!isUuid(organizationId)) {
+      json(res, 400, { error: "invalid_request" });
+      return;
+    }
+    if (req.method === "GET") {
+      const permission = new URL(
+        req.url!,
+        "http://api.internal",
+      ).searchParams.get("permission");
+      if (!isPermissionKey(permission)) {
+        json(res, 400, { error: "invalid_request" });
+        return;
+      }
+      const decision = await requirePermission(pool, {
+        userId: user.userId,
+        organizationId,
+        permission,
+      });
+      await auditAuthorizationDecision(
+        pool,
+        {
+          userId: user.userId,
+          organizationId,
+          permission,
+          decision: decision.granted ? "granted" : "denied",
+          route: "/v1/org/permissions/check",
+        },
+        false,
+      );
+      if (!decision.granted && decision.reason === "authorization_unavailable")
+        throw new Error("Authorization storage unavailable");
+      json(res, 200, decision.granted ? decision : { granted: false });
+      return;
+    }
+    const result = await configureOrganization(pool, {
+      userId: user.userId,
+      organizationId,
+      route: req.url!,
+      body: await readJson(req),
+    });
+    json(res, result.status, result.body);
     return;
   }
 

@@ -42,6 +42,9 @@ importers:
         specifier: ^8.13.1
         version: 8.23.1
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.5.16
+        version: 0.5.16
       '@types/pg':
         specifier: ^8.11.10
         version: 8.23.1
@@ -72,6 +75,9 @@ importers:
   packages/shared: {}
 
 packages:
+
+  '@electric-sql/pglite@0.5.16':
+    resolution: {integrity: sha512-Nj8KcIsJL748W408U2N8q4+9IlONdpRIU8MJypIAAINMJ5nqKyqpX7Mgg/5XKkXiAib3AoZGR6hnJFlrlLBrcg==}
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -757,6 +763,8 @@ packages:
     engines: {node: '>=10'}
 
 snapshots:
+
+  '@electric-sql/pglite@0.5.16': {}
 
   '@esbuild/aix-ppc64@0.28.2':
     optional: true
