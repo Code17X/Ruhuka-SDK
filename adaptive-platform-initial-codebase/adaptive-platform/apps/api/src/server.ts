@@ -76,23 +76,29 @@ function cookieValue(req: IncomingMessage, name: string): string | undefined {
   return pair ? pair.slice(name.length + 1) : undefined;
 }
 
+function sessionCookieAttributes(config: AppConfig): string {
+  // Host-only cookies (no Domain) work through the public reverse proxy.
+  // Do not derive security settings from untrusted forwarded request headers.
+  const secure = config.nodeEnv === "production" ||
+    new URL(config.corsOrigin).protocol === "https:";
+  return `Path=/; HttpOnly; SameSite=Lax${secure ? "; Secure" : ""}`;
+}
+
 function setSessionCookie(
   res: ServerResponse,
   token: string,
   config: AppConfig,
 ): void {
-  const secure = config.nodeEnv === "production" ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
-    `ruhuka_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure}`,
+    `ruhuka_session=${token}; ${sessionCookieAttributes(config)}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`,
   );
 }
 
 function clearSessionCookie(res: ServerResponse, config: AppConfig): void {
-  const secure = config.nodeEnv === "production" ? "; Secure" : "";
   res.setHeader(
     "Set-Cookie",
-    `ruhuka_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`,
+    `ruhuka_session=; ${sessionCookieAttributes(config)}; Max-Age=0`,
   );
 }
 
@@ -112,6 +118,7 @@ export function isTrustedOrigin(
     return (
       requestIsOrigin &&
       configuredIsOrigin &&
+      ["http:", "https:"].includes(requestOrigin.protocol) &&
       requestOrigin.origin === configuredOrigin.origin
     );
   } catch {
@@ -162,6 +169,34 @@ async function handleRequest(
   config: AppConfig,
   loginLimiter: LoginRateLimiter,
 ): Promise<void> {
+  // Same-origin GETs may omit Origin. Browser mutations still require the
+  // configured public origin; Host/X-Forwarded-* never establish trust.
+  res.setHeader("Vary", "Origin");
+  if (req.headers.origin) {
+    if (!isTrustedOrigin(req.headers.origin, config.corsOrigin)) {
+      json(res, 403, { error: "forbidden" });
+      return;
+    }
+    res.setHeader("Access-Control-Allow-Origin", new URL(config.corsOrigin).origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+  }
+  if (req.method === "OPTIONS") {
+    const method = req.headers["access-control-request-method"];
+    const headers = req.headers["access-control-request-headers"];
+    const allowedHeaders = new Set(["content-type", "x-organization-id"]);
+    if (!isTrustedOrigin(req.headers.origin, config.corsOrigin) ||
+        typeof method !== "string" || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) ||
+        (typeof headers === "string" && headers.split(",").some((header) => !allowedHeaders.has(header.trim().toLowerCase())))) {
+      json(res, 403, { error: "forbidden" });
+      return;
+    }
+    res.setHeader("Vary", "Origin, Access-Control-Request-Method, Access-Control-Request-Headers");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Organization-Id");
+    res.writeHead(204);
+    res.end();
+    return;
+  }
   if (req.method === "GET" && req.url === "/health") {
     json(res, 200, { status: "ok", service: "api" });
     return;
@@ -256,7 +291,7 @@ async function handleRequest(
       decision: decision.granted ? "granted" : "denied",
       reason: decision.granted ? undefined : decision.reason,
       route: "/v1/users/me",
-    });
+    }, false);
 
     if (!decision.granted || !decision.scopes.includes("own_user")) {
       console.error(

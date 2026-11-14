@@ -6,6 +6,13 @@ import {
 } from "../../../packages/config/src/index.js";
 
 describe("application configuration", () => {
+  test("uses the public proxy origin ahead of legacy CORS configuration", () => {
+    assert.equal(loadConfig({
+      PUBLIC_ORIGIN: "https://portal.example.invalid/",
+      CORS_ORIGIN: "http://localhost:3000",
+    }).corsOrigin, "https://portal.example.invalid");
+    assert.throws(() => loadConfig({ PUBLIC_ORIGIN: "https://portal.example.invalid/path" }), ConfigValidationError);
+  });
   test("keeps local development defaults", () => {
     assert.deepEqual(loadConfig({}), {
       nodeEnv: "development",

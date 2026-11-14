@@ -9,7 +9,7 @@ CREATE TABLE client_student_links (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     organization_id uuid NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     membership_id uuid NOT NULL REFERENCES memberships(id) ON DELETE CASCADE,
-    student_id uuid NOT NULL REFERENCES students(id) ON DELETE RESTRICT,
+    student_id uuid NOT NULL REFERENCES students(student_id) ON DELETE RESTRICT,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     

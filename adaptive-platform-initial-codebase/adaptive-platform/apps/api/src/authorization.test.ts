@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import type { Pool as PoolType } from "pg";
 import {
@@ -98,6 +98,21 @@ describe("AI tool authorization", () => {
 });
 
 describe("audit authorization decisions", () => {
+  test("blocks mutations when auditing fails, for grants and denials", async () => {
+    const failure = new Error("audit unavailable");
+    const pool = { query: async () => { throw failure; } } as unknown as PoolType;
+    for (const decision of ["granted", "denied"] as const) {
+      let mutated = false;
+      await assert.rejects(async () => {
+        await auditAuthorizationDecision(pool, {
+          userId: "u1", organizationId: "o1", permission: "student.update", decision,
+        }, true);
+        mutated = true;
+      }, (error) => error === failure);
+      assert.equal(mutated, false);
+    }
+  });
+
   test("writes a grant decision to the audit log", async () => {
     const queries: string[] = [];
     const pool = {
@@ -114,7 +129,7 @@ describe("audit authorization decisions", () => {
       scope: "own_user",
       decision: "granted",
       route: "/v1/users/me",
-    });
+    }, false);
     assert.equal(queries.length, 1);
     assert.match(queries[0], /INSERT INTO audit_log/);
   });
@@ -134,7 +149,7 @@ describe("audit authorization decisions", () => {
       decision: "denied",
       reason: "membership_inactive",
       route: "/v1/users/me",
-    });
+    }, false);
     assert.equal(queries.length, 1);
     assert.match(queries[0], /INSERT INTO audit_log/);
   });
@@ -152,7 +167,7 @@ describe("audit authorization decisions", () => {
         permission: "user.read",
         decision: "denied",
         reason: "membership_not_found",
-      });
+      }, false);
     });
   });
 });

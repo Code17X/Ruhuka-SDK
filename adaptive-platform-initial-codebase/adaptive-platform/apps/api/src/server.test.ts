@@ -6,6 +6,7 @@ import type { Pool } from "pg";
 import { createApiServer, isTrustedOrigin } from "./server.js";
 import { isJsonContentType } from "./request-content-type.js";
 import type { AppConfig } from "@adaptive/config";
+import { hashPassword } from "./auth.js";
 
 const config: AppConfig = {
   nodeEnv: "test",
@@ -59,6 +60,47 @@ async function postLogin(
 }
 
 describe("authentication API request handling", () => {
+  test("supports trusted localhost preflight without database access", async () => {
+    const { pool, queries } = fakePool();
+    const app = await startServer(pool);
+    try {
+      for (const origin of [config.corsOrigin, "https://evil.invalid"]) {
+        const response = await fetch(`${app.baseUrl}/v1/auth/login`, {
+          method: "OPTIONS",
+          headers: { Origin: origin, "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type, x-organization-id" },
+        });
+        assert.equal(response.status, origin === config.corsOrigin ? 204 : 403);
+        assert.equal(response.headers.get("access-control-allow-origin"), origin === config.corsOrigin ? origin : null);
+      }
+      assert.deepEqual(queries, []);
+    } finally { await app.close(); }
+  });
+
+  test("sets and clears host-only secure cookies behind an HTTPS proxy", async () => {
+    const password = "not-a-real-password";
+    const passwordHash = await hashPassword(password);
+    const { pool } = fakePool((sql) => ({ rows: sql.includes("SELECT id, password_hash")
+      ? [{ id: "u1", account_status: "active", password_hash: passwordHash }] : [] }));
+    const publicOrigin = "https://portal.example.invalid";
+    const app = await startServer(pool, { ...config, nodeEnv: "production", corsOrigin: publicOrigin });
+    try {
+      const response = await postLogin(app.baseUrl, publicOrigin);
+      assert.equal(response.status, 200);
+      const cookie = response.headers.get("set-cookie") ?? "";
+      assert.match(cookie, /HttpOnly; SameSite=Lax; Secure/);
+      assert.doesNotMatch(cookie, /Domain=/i);
+      const logout = await fetch(`${app.baseUrl}/v1/auth/logout`, {
+        method: "POST", headers: { Origin: publicOrigin, "Content-Type": "application/json", Cookie: cookie.split(";")[0] }, body: "{}",
+      });
+      assert.equal(logout.status, 200);
+      assert.match(logout.headers.get("set-cookie") ?? "", /SameSite=Lax; Secure; Max-Age=0/);
+      const rejected = await fetch(`${app.baseUrl}/v1/auth/login`, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-Host": "portal.example.invalid", "X-Forwarded-Proto": "https" }, body: "{}",
+      });
+      assert.equal(rejected.status, 403);
+    } finally { await app.close(); }
+  });
   let server: Awaited<ReturnType<typeof startServer>>;
 
   before(async () => {
@@ -114,7 +156,7 @@ describe("authentication API request handling", () => {
       const clearedCookie = response.headers.get("set-cookie");
       assert.match(clearedCookie ?? "", /ruhuka_session=;/);
       assert.match(clearedCookie ?? "", /HttpOnly/);
-      assert.match(clearedCookie ?? "", /SameSite=Strict/);
+      assert.match(clearedCookie ?? "", /SameSite=Lax/);
       assert.match(clearedCookie ?? "", /Path=\//);
       assert.match(clearedCookie ?? "", /Max-Age=0/);
     } finally {
@@ -238,10 +280,12 @@ describe("protected user profile route", () => {
     membershipStatus?: string;
     scopes?: { scope: string }[];
     session?: { user_id: string } | null;
+    auditFails?: boolean;
   }) {
     const calls: { sql: string; values?: unknown[] }[] = [];
     const { pool } = fakePool((sql, values) => {
       calls.push({ sql, values });
+      if (options.auditFails && /INSERT INTO audit_log/.test(sql)) throw new Error("audit unavailable");
       if (/FROM user_sessions/.test(sql)) {
         return { rows: options.session === null ? [] : [{ user_id: "u1" }] };
       }
@@ -274,6 +318,11 @@ describe("protected user profile route", () => {
     const response = await fetchMe(fakePool().pool);
     assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), { error: "unauthenticated" });
+  });
+  test("keeps GET available when audit storage fails", async () => {
+    const { pool } = profilePool({ auditFails: true });
+    const response = await fetchMe(pool, "org-1");
+    assert.equal(response.status, 200);
   });
   test("requires the organization selector header", async () => {
     const { pool } = profilePool({});

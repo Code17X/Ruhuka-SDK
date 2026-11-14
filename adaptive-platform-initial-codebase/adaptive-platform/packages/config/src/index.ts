@@ -85,7 +85,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const apiPort = parseApiPort(env.API_PORT);
   const production = nodeEnv === "production";
   const databaseUrl = env.DATABASE_URL ?? "";
-  const configuredCorsOrigin = env.CORS_ORIGIN;
+  // Public browser origin, independent of the reverse proxy's internal API host.
+  const configuredCorsOrigin = env.PUBLIC_ORIGIN ?? env.CORS_ORIGIN;
   const corsOrigin = configuredCorsOrigin ?? "http://localhost:3000";
 
   if (production && databaseUrl.length === 0) {
@@ -97,11 +98,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     );
   }
   if (production && configuredCorsOrigin === undefined) {
-    throw new ConfigValidationError("CORS_ORIGIN is required in production");
+    throw new ConfigValidationError("PUBLIC_ORIGIN or CORS_ORIGIN is required in production");
   }
   if (!validateCorsOrigin(corsOrigin, production)) {
     throw new ConfigValidationError(
-      "CORS_ORIGIN must be a valid origin without a path",
+      "PUBLIC_ORIGIN / CORS_ORIGIN must be a valid origin without a path",
     );
   }
 
@@ -109,7 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nodeEnv,
     apiPort,
     databaseUrl,
-    corsOrigin,
+    corsOrigin: new URL(corsOrigin).origin,
     aiProvider: env.AI_PROVIDER ?? "mock",
   };
 }

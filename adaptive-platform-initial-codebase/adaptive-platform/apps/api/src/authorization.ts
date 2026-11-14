@@ -97,7 +97,8 @@ export async function checkToolPermission(
 }
 /**
  * Write an authorization decision to the audit log.
- * Fail-closed: if the write fails, the error is swallowed (the decision itself is already made).
+ * Reads are best-effort. Mutations must await this before performing any writes;
+ * an audit failure propagates to the route's 500 error handler.
  */
 export async function auditAuthorizationDecision(
   pool: Pick<Pool, "query">,
@@ -111,6 +112,7 @@ export async function auditAuthorizationDecision(
     reason?: string;
     route?: string;
   },
+  isMutation: boolean,
 ): Promise<void> {
   try {
     await pool.query(
@@ -127,7 +129,8 @@ export async function auditAuthorizationDecision(
         input.route ?? null,
       ],
     );
-  } catch {
-    // Fail closed: audit logging is a side effect; don't expose errors
+  } catch (error) {
+    if (isMutation) throw error;
+    // Read-only requests remain available when audit storage is unavailable.
   }
 }
