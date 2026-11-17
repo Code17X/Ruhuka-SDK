@@ -133,6 +133,52 @@ export async function getLinkedEntityIds(
 
 export const getAssignedEntityIds = getLinkedEntityIds;
 
+/** Enumerate an entity type using the same grants and graph paths as canAccessEntity.
+ * The permission is derived by the backend, never supplied by the model.
+ */
+export async function getAccessibleEntityIds(
+  pool: Pick<Pool, "query">,
+  input: { userId: string; organizationId: string; entityType: string },
+): Promise<string[]> {
+  if (!/^[a-z][a-z0-9_]{0,63}$/.test(input.entityType)) return [];
+  const decision = await requirePermission(pool, {
+    ...input,
+    permission: `${input.entityType}.read`,
+  });
+  if (!decision.granted) {
+    if (decision.reason === "authorization_unavailable")
+      throw new Error("Authorization storage unavailable");
+    return [];
+  }
+  const membership = await pool.query<{ id: string }>(
+    "SELECT id FROM memberships WHERE user_id = $1 AND organization_id = $2 AND status = 'active'",
+    [input.userId, input.organizationId],
+  );
+  if (!membership.rows[0]) return [];
+  const ids = new Set<string>();
+  const organizationScope = decision.scopes.includes("organization");
+  if (!organizationScope) {
+    for (const scope of decision.scopes) {
+      const path = scope === "own_user" ? [] : scopePath(scope);
+      if (path) {
+        for (const id of await entitiesAlongPath(
+          pool,
+          membership.rows[0].id,
+          path,
+          input.organizationId,
+        ))
+          ids.add(id);
+      }
+    }
+  }
+  const entities = await pool.query<{ id: string }>(
+    `SELECT id FROM entities WHERE organization_id = $1 AND entity_type = $2
+       AND ($3::boolean OR id = ANY($4::uuid[])) ORDER BY id`,
+    [input.organizationId, input.entityType, organizationScope, [...ids]],
+  );
+  return entities.rows.map((entity) => entity.id);
+}
+
 /** Permission grants alone never authorize an arbitrary entity ID. */
 export async function canAccessEntity(
   pool: Pick<Pool, "query">,

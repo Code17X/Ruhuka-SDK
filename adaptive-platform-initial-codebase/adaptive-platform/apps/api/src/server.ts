@@ -19,6 +19,7 @@ import {
   requirePermission,
 } from "./authorization.js";
 import { createDatabasePool } from "./db/pool.js";
+import { handleAiChat } from "./ai-chat.js";
 import { isValidLoginInput } from "./login-validation.js";
 import { LoginRateLimiter } from "./login-rate-limit.js";
 import { isJsonContentType } from "./request-content-type.js";
@@ -146,6 +147,7 @@ function safeRouteName(req: IncomingMessage): string {
     pathname === "/v1/auth/logout" ||
     pathname === "/v1/auth/session" ||
     pathname === "/v1/users/me" ||
+    pathname === "/v1/ai/chat" ||
     pathname === "/v1/ai/sessions/demo/messages" ||
     pathname === "/v1/org/permissions/check" ||
     (pathname !== undefined && configurationRoutes.has(pathname))
@@ -170,7 +172,7 @@ function logInternalError(req: IncomingMessage, error: unknown): void {
       route: safeRouteName(req),
       errorClass,
       ...(typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)
-        ? { databaseCode: code, errorMessage: error.message }
+        ? { databaseCode: code }
         : {}),
     }),
   );
@@ -238,6 +240,7 @@ async function handleRequest(
     req.method === "POST" &&
     (req.url === "/v1/auth/login" ||
       req.url === "/v1/auth/logout" ||
+      req.url === "/v1/ai/chat" ||
       configurationRoutes.has(req.url ?? ""))
   ) {
     if (!isTrustedOrigin(req.headers.origin, config.corsOrigin)) {
@@ -409,6 +412,29 @@ async function handleRequest(
       userId: user.userId,
       organizationId,
       route: req.url!,
+      body: await readJson(req),
+    });
+    json(res, result.status, result.body);
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/v1/ai/chat") {
+    const user = await authenticateSession(
+      pool,
+      cookieValue(req, "ruhuka_session"),
+    );
+    if (!user) {
+      json(res, 401, { error: "unauthenticated" });
+      return;
+    }
+    const organizationId = req.headers["x-organization-id"];
+    if (!isUuid(organizationId)) {
+      json(res, 400, { error: "invalid_request" });
+      return;
+    }
+    const result = await handleAiChat(pool, {
+      userId: user.userId,
+      organizationId,
       body: await readJson(req),
     });
     json(res, result.status, result.body);
